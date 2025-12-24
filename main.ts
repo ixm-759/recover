@@ -62,7 +62,7 @@ async function main() {
   // Ajuste de Gas Price (agresivo para ganar a otros bots)
   // Si feeData.maxFeePerGas existe (EIP-1559), úsalo. Si no, usa gasPrice.
   // En BSC a veces es legacy. Forzaremos un poco más del standard.
-  const MIN_GAS_PRICE = ethers.parseUnits("5", "gwei");
+  const MIN_GAS_PRICE = ethers.parseUnits("10", "gwei");
   let fetchedPrice = feeData.gasPrice || 0n;
   if (fetchedPrice < MIN_GAS_PRICE) {
     fetchedPrice = MIN_GAS_PRICE;
@@ -127,33 +127,38 @@ async function main() {
   const signedMigrate = await compromisedWallet.signTransaction(txMigrate);
   const signedTransfer = await compromisedWallet.signTransaction(txTransfer);
 
-  // 6️⃣ Enviar en Paralelo (Poor Man's Bundle)
-  console.log("🚀 ENVIANDO BUNDLE (Todo simultáneo)...");
-
-  // No usamos await aquí uno por uno para no perder tiempo, lanzamos las promesas
-  const p1 = provider.broadcastTransaction(signedFund);
-  const p2 = provider.broadcastTransaction(signedMigrate);
-  const p3 = provider.broadcastTransaction(signedTransfer);
+  // 6️⃣ EJECUCIÓN: Fund & Sprint Strategy
+  console.log("\n🚀 ESTRATEGIA: Fund & Sprint");
+  console.log("1️⃣  Enviando Fondeo y esperando confirmación...");
 
   try {
-    const [sentFund, sentMigrate, sentTransfer] = await Promise.all([p1, p2, p3]);
+    const sentFund = await provider.broadcastTransaction(signedFund);
+    console.log(`   -> Fondeo Hash: ${sentFund.hash}`);
 
-    console.log(`\n✅ Fondeo Enviado: ${sentFund.hash}`);
-    console.log(`✅ Migración Enviada: ${sentMigrate.hash}`);
-    console.log(`✅ Transferencia Enviada: ${sentTransfer.hash}`);
+    console.log("⏳ Esperando a que el bloque confirme el fondeo...");
+    await sentFund.wait(1);
+    console.log("✅ Fondeo Confirmado. SALDO DISPONIBLE.");
 
-    console.log("\n⏳ Esperando confirmaciones...");
-    await sentFund.wait();
-    console.log("Confirmed: Fondeo");
+    console.log("\n2️⃣  Lanzando Rescate (Migrate + Transfer) INMEDIATAMENTE...");
+    // Lanzamos las transacciones de rescate en paralelo ahora que hay saldo
+    const p1 = provider.broadcastTransaction(signedMigrate);
+    const p2 = provider.broadcastTransaction(signedTransfer);
+
+    const [sentMigrate, sentTransfer] = await Promise.all([p1, p2]);
+
+    console.log(`   -> Migración enviada: ${sentMigrate.hash}`);
+    console.log(`   -> Transferencia enviada: ${sentTransfer.hash}`);
+
+    console.log("\n⏳ Esperando confirmaciones finales...");
     await sentMigrate.wait();
-    console.log("Confirmed: Migración");
+    console.log("✅ Migración Exitosa");
     await sentTransfer.wait();
-    console.log("Confirmed: Transferencia");
+    console.log("✅ Transferencia Exitosa");
 
     console.log("\n🎉 ¡ÉXITO! NFT Rescatado en:", SAFE_WALLET);
 
   } catch (error) {
-    console.error("❌ Error en el broadcast/minado:", error);
+    console.error("❌ Error durante la ejecución:", error);
   }
 }
 
