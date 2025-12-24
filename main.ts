@@ -27,9 +27,6 @@ const NFT_ABI = [
 // ================= SCRIPT =================
 
 const FUNDING_PK = process.env.FUNDING_PK || "";
-// ⚠️ COMPROMISED_PK y SAFE_WALLET ya están definidos arriba, asegúrate de que se lean del env si no lo están
-// Para este ejemplo asumiré que se leen de las constantes o process.env si se cambian. 
-// Voy a reescribir la parte de las constantes para asegurar que usen process.env
 
 async function main() {
   if (!FUNDING_PK) throw new Error("Falta FUNDING_PK en .env");
@@ -65,7 +62,12 @@ async function main() {
   // Ajuste de Gas Price (agresivo para ganar a otros bots)
   // Si feeData.maxFeePerGas existe (EIP-1559), úsalo. Si no, usa gasPrice.
   // En BSC a veces es legacy. Forzaremos un poco más del standard.
-  const gasPrice = (feeData.gasPrice || ethers.parseUnits("3", "gwei")) * 120n / 100n; // +20%
+  const MIN_GAS_PRICE = ethers.parseUnits("5", "gwei");
+  let fetchedPrice = feeData.gasPrice || 0n;
+  if (fetchedPrice < MIN_GAS_PRICE) {
+    fetchedPrice = MIN_GAS_PRICE;
+  }
+  const gasPrice = fetchedPrice * 120n / 100n; // +20% buffer
   console.log(`⛽ Gas Price: ${ethers.formatUnits(gasPrice, "gwei")} gwei`);
 
   // 3️⃣ Construir Transacciones (Populate)
