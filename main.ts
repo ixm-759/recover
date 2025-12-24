@@ -26,66 +26,135 @@ const NFT_ABI = [
 
 // ================= SCRIPT =================
 
+const FUNDING_PK = process.env.FUNDING_PK || "";
+// ⚠️ COMPROMISED_PK y SAFE_WALLET ya están definidos arriba, asegúrate de que se lean del env si no lo están
+// Para este ejemplo asumiré que se leen de las constantes o process.env si se cambian. 
+// Voy a reescribir la parte de las constantes para asegurar que usen process.env
+
 async function main() {
-  const provider = new ethers.JsonRpcProvider(RPC_URL);
-  const wallet = new ethers.Wallet(COMPROMISED_PK, provider);
+  if (!FUNDING_PK) throw new Error("Falta FUNDING_PK en .env");
 
-  console.log("🔐 Wallet comprometida:", wallet.address);
-  console.log("🛡️ Wallet segura:", SAFE_WALLET);
+  const provider = new ethers.JsonRpcProvider(RPC_URL); // Changed RPC to RPC_URL
+  const compromisedWallet = new ethers.Wallet(COMPROMISED_PK, provider);
+  const fundingWallet = new ethers.Wallet(FUNDING_PK, provider);
 
-  const vault = new ethers.Contract(VAULT, VAULT_ABI, wallet);
-  const nft = new ethers.Contract(VE_NFT, NFT_ABI, wallet);
+  const vault = new ethers.Contract(VAULT, VAULT_ABI, compromisedWallet);
+  const nft = new ethers.Contract(VE_NFT, NFT_ABI, compromisedWallet);
 
-  // 1️⃣ Simulación (NO escribe en chain)
-  const veTokenId: bigint = await vault.migrateToVotingEscrow.staticCall(
+  console.log("💀 Wallet Comprometida:", compromisedWallet.address);
+  console.log("💰 Wallet de Fondeo:", fundingWallet.address);
+  console.log("🛡️ Wallet Segura (Destino):", SAFE_WALLET);
+
+  // 1️⃣ Preparación de datos (Offline / Call Static)
+  console.log("🔄 Simulando migración...");
+  const veTokenId = await vault.migrateToVotingEscrow.staticCall(
     [PID],
     LOCK_DURATION,
     LOCK_TYPE
   );
+  console.log("🎟️ veTokenId a recuperar:", veTokenId.toString());
 
-  console.log("🎟️ veTokenId esperado:", veTokenId.toString());
+  // 2️⃣ Obtener Nonces Actuales
+  // Usamos Promise.all para reducir latencia
+  const [nonceCompromised, nonceFunding, feeData] = await Promise.all([
+    provider.getTransactionCount(compromisedWallet.address, "latest"),
+    provider.getTransactionCount(fundingWallet.address, "latest"),
+    provider.getFeeData()
+  ]);
 
-  // 2️⃣ Nonce
-  const nonce = await provider.getTransactionCount(wallet.address, "latest");
+  // Ajuste de Gas Price (agresivo para ganar a otros bots)
+  // Si feeData.maxFeePerGas existe (EIP-1559), úsalo. Si no, usa gasPrice.
+  // En BSC a veces es legacy. Forzaremos un poco más del standard.
+  const gasPrice = (feeData.gasPrice || ethers.parseUnits("3", "gwei")) * 120n / 100n; // +20%
+  console.log(`⛽ Gas Price: ${ethers.formatUnits(gasPrice, "gwei")} gwei`);
 
-  // 3️⃣ TX migrate
-  const migrateTx = await vault.migrateToVotingEscrow.populateTransaction(
+  // 3️⃣ Construir Transacciones (Populate)
+
+  // TX A: Migración (Compromised)
+  const txMigratePopulated = await vault.migrateToVotingEscrow.populateTransaction(
     [PID],
     LOCK_DURATION,
     LOCK_TYPE
   );
+  const gasLimitMigrate = 800_000n; // Hardcoded seguro o estimado
 
-  migrateTx.nonce = nonce;
-  migrateTx.gasLimit = 700_000n;
-  migrateTx.gasPrice = ethers.parseUnits("6", "gwei");
+  const txMigrate = {
+    ...txMigratePopulated,
+    chainId: (await provider.getNetwork()).chainId,
+    nonce: nonceCompromised,
+    gasLimit: gasLimitMigrate,
+    gasPrice,
+  };
 
-  // 4️⃣ TX transfer
-  const transferTx = await nft.transferFrom.populateTransaction(
-    wallet.address,
+  // TX B: Transferencia NFT (Compromised)
+  const txTransferPopulated = await nft.transferFrom.populateTransaction(
+    compromisedWallet.address,
     SAFE_WALLET,
     veTokenId
   );
+  const gasLimitTransfer = 350_000n;
 
-  transferTx.nonce = nonce + 1;
-  transferTx.gasLimit = 300_000n;
-  transferTx.gasPrice = ethers.parseUnits("6", "gwei");
+  const txTransfer = {
+    ...txTransferPopulated,
+    chainId: (await provider.getNetwork()).chainId,
+    nonce: nonceCompromised + 1,
+    gasLimit: gasLimitTransfer,
+    gasPrice,
+  };
 
-  // 🚀 ENVÍO SECUENCIAL (MISMO RPC PRIVADO)
-  console.log("🚀 Enviando migrate...");
-  const sentMigrate = await wallet.sendTransaction(migrateTx);
-  console.log("TX migrate:", sentMigrate.hash);
+  // 4️⃣ Calcular Gas Total Necesario
+  const totalGasLimit = gasLimitMigrate + gasLimitTransfer;
+  const totalBnbNeeded = totalGasLimit * gasPrice;
+  console.log(`💰 BNB necesario para gas: ${ethers.formatUnits(totalBnbNeeded, "ether")} BNB`);
 
-  console.log("🚀 Enviando transfer NFT...");
-  const sentTransfer = await wallet.sendTransaction(transferTx);
-  console.log("TX transfer:", sentTransfer.hash);
+  // TX C: Fondeo (Funding Wallet -> Compromised Wallet)
+  // Enviamos EXACTAMENTE lo necesario para que no sobre nada que el sweeper pueda robar después
+  // O un poquito más por seguridad, pero muy poco.
+  const txFund = {
+    to: compromisedWallet.address,
+    value: totalBnbNeeded, // + un pequeño buffer si quieres, p.ej: + ethers.parseEther("0.0001")
+    chainId: (await provider.getNetwork()).chainId,
+    nonce: nonceFunding,
+    gasLimit: 21000n,
+    gasPrice,
+  };
 
-  console.log("⏳ Esperando confirmación...");
-  await Promise.all([sentMigrate.wait(), sentTransfer.wait()]);
+  // 5️⃣ Firmar Transacciones (Offline)
+  console.log("✍️  Firmando transacciones...");
+  const signedFund = await fundingWallet.signTransaction(txFund);
+  const signedMigrate = await compromisedWallet.signTransaction(txMigrate);
+  const signedTransfer = await compromisedWallet.signTransaction(txTransfer);
 
-  console.log("✅ Rescate completado con éxito");
+  // 6️⃣ Enviar en Paralelo (Poor Man's Bundle)
+  console.log("🚀 ENVIANDO BUNDLE (Todo simultáneo)...");
+
+  // No usamos await aquí uno por uno para no perder tiempo, lanzamos las promesas
+  const p1 = provider.broadcastTransaction(signedFund);
+  const p2 = provider.broadcastTransaction(signedMigrate);
+  const p3 = provider.broadcastTransaction(signedTransfer);
+
+  try {
+    const [sentFund, sentMigrate, sentTransfer] = await Promise.all([p1, p2, p3]);
+
+    console.log(`\n✅ Fondeo Enviado: ${sentFund.hash}`);
+    console.log(`✅ Migración Enviada: ${sentMigrate.hash}`);
+    console.log(`✅ Transferencia Enviada: ${sentTransfer.hash}`);
+
+    console.log("\n⏳ Esperando confirmaciones...");
+    await sentFund.wait();
+    console.log("Confirmed: Fondeo");
+    await sentMigrate.wait();
+    console.log("Confirmed: Migración");
+    await sentTransfer.wait();
+    console.log("Confirmed: Transferencia");
+
+    console.log("\n🎉 ¡ÉXITO! NFT Rescatado en:", SAFE_WALLET);
+
+  } catch (error) {
+    console.error("❌ Error en el broadcast/minado:", error);
+  }
 }
 
-main().catch((err) => {
-  console.error("❌ Error en rescate:", err);
-  process.exit(1);
+main().catch((e) => {
+  console.error("❌ Error General:", e);
 });

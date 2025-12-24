@@ -13,6 +13,7 @@
 
     *   `RPC_URL`: La URL del nodo RPC (por ejemplo, `https://bsc.blockpi.network/v1/rpc/private`).
     *   `COMPROMISED_PK`: La clave privada de la wallet comprometida (debe empezar con `0x`).
+    *   `FUNDING_PK`: La clave privada de una wallet con BNB que pagará el gas de las transacciones (para no enviar BNB antes y alertar al sweeper).
     *   `SAFE_WALLET`: La dirección pública de la wallet segura donde recibirás el NFT.
 
 ## Instalación
