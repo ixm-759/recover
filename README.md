@@ -24,12 +24,20 @@ Instala las dependencias necesarias ejecutando:
 npm install
 ```
 
-## Ejecución
+## Verificación
 
-Para ejecutar el script principal:
+Antes de ejecutar el rescate, verifica que tus llaves y conexión sean correctas:
 
 ```bash
-npx ts-node main.ts
+npm run test
+```
+
+## Ejecución
+
+Para ejecutar el script principal (RESCATE REAL):
+
+```bash
+npm start
 ```
 
 El script realizará lo siguiente:
